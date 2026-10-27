@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>paywall-lite — sell one file from a static page, paid in USDC on Base</title>
+<style>
+  :root{--bg:#07090d;--card:#101720;--line:#222c3a;--txt:#e6edf7;--dim:#8b98ab;--acc:#4ade80;--bad:#f87171}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  main{max-width:620px;margin:0 auto;padding:56px 22px}
+  h1{font-size:30px;letter-spacing:-.8px;margin:0 0 8px}
+  p{color:#c2cddd}
+  .dim{color:var(--dim);font-size:14px}
+  .card{border:1px solid var(--line);border-radius:14px;background:var(--card);padding:22px;margin:22px 0}
+  code,pre,input{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  code{background:#131a24;padding:1px 5px;border-radius:4px;font-size:.88em}
+  pre{background:#080b11;border:1px solid var(--line);border-radius:9px;padding:13px;overflow:auto;font-size:12.5px;color:#a7b6cb}
+  .addr{font-size:13px;word-break:break-all;background:#080b11;border:1px solid var(--line);border-radius:8px;padding:10px}
+  input{width:100%;background:#080b11;border:1px solid var(--line);border-radius:8px;color:var(--txt);padding:11px;font-size:13px;margin:10px 0}
+  button{background:var(--acc);border:0;color:#04140a;font-weight:700;border-radius:8px;padding:11px 18px;cursor:pointer;font-size:14px}
+  button[disabled]{opacity:.5;cursor:wait}
+  .ok{border-color:rgba(74,222,128,.4);background:rgba(74,222,128,.06)}
+  .bad{border-color:rgba(248,113,113,.4);background:rgba(248,113,113,.06)}
+</style>
+</head>
+<body>
+<main>
+  <h1>Sell one file from a static page</h1>
+  <p class="dim">This page is the whole product: no backend, no Stripe, no KYC. It reads a Base
+  transaction receipt and unlocks a download when a real USDC transfer to the seller exists.</p>
+
+  <div class="card">
+    <p style="margin-top:0"><b>Step 1.</b> Send <code>19.00 USDC</code> on Base to:</p>
+    <div class="addr" id="payto"></div>
+    <p style="margin-bottom:0"><b>Step 2.</b> Paste the transaction hash:</p>
+    <input id="tx" placeholder="0x… 64 hex characters" autocomplete="off" spellcheck="false">
+    <button id="go">Verify &amp; unlock</button>
+    <div id="out"></div>
+  </div>
+
+  <div class="card">
+    <p style="margin-top:0"><b>What the check does</b></p>
+    <pre>eth_getTransactionReceipt(hash)   over 4 public Base RPCs, first one that answers
+  status === "0x1"                the tx did not revert
+  logs[] where address = USDC     native USDC on Base, not a bridged copy
+  topics[0] = Transfer(...)       a real ERC-20 transfer event
+  topics[2] = seller address      paid to the right wallet
+  sum(data) >= 19e6               at least the asking price, in USDC units</pre>
+    <p class="dim" style="margin-bottom:0">Every rejection prints the reason in plain language.
+    A hash from an exchange withdrawal has no USDC transfer to the seller and is refused.</p>
+  </div>
+
+  <p class="dim">The verifier in <code>assets/verify.js</code> is the same file the Node test suite
+  loads, so the code that unlocks this page is the code under test:
+  <code>node tests/verify.test.js</code> → 18 checks against a real Base mainnet transaction.</p>
+</main>
+
+<script src="assets/verify.js"></script>
+<script>
+  const PAY_TO = "0x72Aa6edDE71B94f6b99c8e52EdC02B5C75F74d1a";
+  const PRICE = 19000000n;               // 19 USDC, 6 decimals
+  document.getElementById("payto").textContent = PAY_TO;
+
+  const out = document.getElementById("out");
+  const btn = document.getElementById("go");
+
+  function render(cls, title, body) {
+    const box = document.createElement("div");
+    box.className = "card " + cls;
+    const h = document.createElement("p");
+    h.style.margin = "0 0 8px";
+    h.innerHTML = "<b>" + title + "</b>";
+    box.appendChild(h);
+    if (typeof body === "string") {
+      const p = document.createElement("p");
+      p.className = "dim";
+      p.style.margin = "0";
+      p.textContent = body;
+      box.appendChild(p);
+    } else {
+      box.appendChild(body);
+    }
+    out.replaceChildren(box);
+  }
+
+  btn.addEventListener("click", async () => {
+    const hash = document.getElementById("tx").value.trim();
+    out.replaceChildren();
+    if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) {
+      return render("bad", "Not unlocked", "That is not a Base transaction hash (0x + 64 hex).");
+    }
+    btn.disabled = true;
+    btn.textContent = "Checking…";
+    try {
+      const receipt = await DefiAudit.rpc("eth_getTransactionReceipt", [hash.toLowerCase()]);
+      if (!receipt) throw new Error("No receipt for that hash — unknown, pending, or not on Base.");
+      if (receipt.status !== "0x1") throw new Error("That transaction reverted. Nothing moved.");
+      const paid = DefiAudit.sumUsdcIn(receipt, PAY_TO);
+      if (paid === 0n) throw new Error("No USDC transfer to " + PAY_TO + " in that transaction.");
+      if (paid < PRICE) throw new Error("Paid " + (Number(paid) / 1e6).toFixed(2) + " USDC, price is 19.00.");
+      const link = document.createElement("p");
+      link.innerHTML = '<a href="assets/demo.txt" download>Download the file →</a>';
+      render("ok", "Paid " + (Number(paid) / 1e6).toFixed(2) + " USDC — unlocked", link);
+    } catch (e) {
+      render("bad", "Not unlocked", e.message || String(e));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Verify & unlock";
+    }
+  });
+</script>
+</body>
+</html>
